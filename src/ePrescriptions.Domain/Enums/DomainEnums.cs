@@ -22,9 +22,10 @@ namespace ePrescriptions.Domain.Enums
 
     public enum InvoiceStatus
     {
-        Completed = 1,
-        Suspended = 2,
-        Cancelled = 3
+        Active = 1,      // نشطة
+        Completed = 1,   // متوافقة مع الكود القديم
+        Cancelled = 2,   // ملغاة
+        Suspended = 3    // معلقة
     }
 
     public enum UnitLevel

@@ -34,6 +34,7 @@ namespace ePrescriptions.Data.Repositories
                 LEFT JOIN InvoiceItems it ON inv.Id = it.InvoiceId
                 LEFT JOIN Items i ON it.ItemId = i.Id
                 WHERE inv.Type = 1
+                  AND IFNULL(inv.Status, 1) != 2
                   AND date(inv.Date) >= date(@from)
                   AND date(inv.Date) <= date(@to)
                   {methodFilter}
@@ -92,11 +93,13 @@ namespace ePrescriptions.Data.Repositories
                         JOIN Invoices inv2 ON it.InvoiceId = inv2.Id
                         JOIN Items i ON it.ItemId = i.Id
                         WHERE inv2.Type = 1
+                          AND IFNULL(inv2.Status, 1) != 2
                           AND date(inv2.Date) >= date(@from)
                           AND date(inv2.Date) <= date(@to)
                     ) AS TotalCost
                 FROM Invoices inv
                 WHERE inv.Type = 1
+                  AND IFNULL(inv.Status, 1) != 2
                   AND date(inv.Date) >= date(@from)
                   AND date(inv.Date) <= date(@to);";
 
@@ -137,6 +140,7 @@ namespace ePrescriptions.Data.Repositories
                 LEFT JOIN InvoiceItems it ON i.Id = it.ItemId
                 LEFT JOIN Invoices inv ON it.InvoiceId = inv.Id 
                      AND inv.Type = 1
+                     AND IFNULL(inv.Status, 1) != 2
                      AND date(inv.Date) >= date(@from)
                      AND date(inv.Date) <= date(@to)
                 WHERE i.IsActive = 1

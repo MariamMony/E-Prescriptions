@@ -273,6 +273,21 @@ namespace ePrescriptions.App.ViewModels
         public IRelayCommand<SalesItemRow> RemoveItemCommand { get; }
         public IRelayCommand<Item> AddItemToCartCommand { get; }
         public IRelayCommand BarcodeEnterCommand { get; }
+        public IRelayCommand CancelInvoiceCommand { get; }
+
+        public bool CanCancelInvoice => _sessionService?.CurrentUser?.Role == UserRole.Admin || _sessionService?.CurrentUser?.Role == UserRole.Owner;
+
+        /// <summary>تأكيد إلغاء الفاتورة للمدير أو صاحب الصيدلية</summary>
+        public Func<Invoice, bool> ConfirmCancellation { get; set; } = inv =>
+            System.Windows.MessageBox.Show(
+                $"هل أنت متأكد من إلغاء الفاتورة رقم {inv.InvoiceNumber} بمبلغ {inv.TotalPiastres / 100m:N2} ج.م؟\nسيتم إرجاع كافة بنودها للمخزون وعكس تأثيرها المالي في الخزينة والعملاء والقيود.",
+                "تأكيد إلغاء الفاتورة",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning,
+                System.Windows.MessageBoxResult.No,
+                System.Windows.MessageBoxOptions.RtlReading | System.Windows.MessageBoxOptions.RightAlign) == System.Windows.MessageBoxResult.Yes;
+
+        public Func<string, string?> PromptInvoiceNumberToCancel { get; set; } = title => null;
 
         public SalesViewModel(
             ItemRepository itemRepository,
@@ -308,6 +323,18 @@ namespace ePrescriptions.App.ViewModels
             BarcodeEnterCommand = new RelayCommand(HandleBarcodeEnter);
             LoadOriginalInvoiceCommand = new RelayCommand(LoadOriginalInvoice);
             OpenShiftCommand = new RelayCommand(OpenShiftFromSales);
+            CancelInvoiceCommand = new RelayCommand(CancelCurrentOrEnteredInvoice, () => CanCancelInvoice);
+
+            if (_sessionService != null)
+            {
+                _sessionService.SessionChanged += () =>
+                {
+                    OnPropertyChanged(nameof(CanCancelInvoice));
+                    OnPropertyChanged(nameof(HasOpenShift));
+                    OnPropertyChanged(nameof(NoOpenShift));
+                    CancelInvoiceCommand.NotifyCanExecuteChanged();
+                };
+            }
 
             LoadInitialData();
             StartNewInvoice();
@@ -616,6 +643,102 @@ namespace ePrescriptions.App.ViewModels
 
             RecalculateTotals();
             SetStatus($"تم تحميل فاتورة {source.Invoice.InvoiceNumber}: عدّل الكميات المرتجعة أو احذف البنود اللي مش راجعة.", true);
+        }
+
+        /// <summary>
+        /// إلغاء فاتورة بيع برقمها: يعيد المخزون، يعكس الأثر المالي، ويسجل في سجل التدقيق (Admin/Owner فقط)
+        /// </summary>
+        public bool CancelInvoiceByNumber(string invoiceNumber, out string errorMessage)
+        {
+            errorMessage = string.Empty;
+            var user = _sessionService?.CurrentUser;
+            if (user == null || (user.Role != UserRole.Admin && user.Role != UserRole.Owner))
+            {
+                errorMessage = "إلغاء الفاتورة يتطلب صلاحية مدير النظام أو صاحب الصيدلية.";
+                SetStatus(errorMessage, false);
+                return false;
+            }
+
+            string number = (invoiceNumber ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(number))
+            {
+                errorMessage = "اكتب رقم الفاتورة المراد إلغاؤها.";
+                SetStatus(errorMessage, false);
+                return false;
+            }
+
+            var inv = _invoiceRepository.GetInvoiceByNumber(number);
+            if (inv == null)
+            {
+                errorMessage = $"لا توجد فاتورة بالرقم {number}.";
+                SetStatus(errorMessage, false);
+                return false;
+            }
+
+            if (inv.Status == InvoiceStatus.Cancelled)
+            {
+                errorMessage = "الفاتورة ملغاة بالفعل.";
+                SetStatus(errorMessage, false);
+                return false;
+            }
+
+            if (ConfirmCancellation != null && !ConfirmCancellation(inv))
+            {
+                errorMessage = "تم التراجع عن إلغاء الفاتورة.";
+                return false;
+            }
+
+            bool success = _invoiceRepository.CancelInvoice(
+                inv.Id,
+                user.Id,
+                user.FullName,
+                user.Role,
+                out errorMessage,
+                _ownerAuditLogRepository,
+                _staffAuditLogRepository);
+
+            if (success)
+            {
+                SetStatus($"تم إلغاء الفاتورة {inv.InvoiceNumber} بنجاح وإرجاع الأصناف للمخزون وتسجيل العملية.", true);
+                if (OriginalInvoiceNumber == inv.InvoiceNumber)
+                {
+                    OriginalInvoiceNumber = string.Empty;
+                    CartItems.Clear();
+                    RecalculateTotals();
+                }
+                return true;
+            }
+            else
+            {
+                SetStatus($"فشل إلغاء الفاتورة: {errorMessage}", false);
+                return false;
+            }
+        }
+
+        public void CancelCurrentOrEnteredInvoice()
+        {
+            if (!CanCancelInvoice)
+            {
+                SetStatus("إلغاء الفاتورة يتطلب صلاحية مدير النظام أو صاحب الصيدلية.", false);
+                return;
+            }
+
+            string targetNumber = !string.IsNullOrWhiteSpace(OriginalInvoiceNumber)
+                ? OriginalInvoiceNumber.Trim()
+                : (!string.IsNullOrWhiteSpace(InvoiceNumber) && _invoiceRepository.GetInvoiceByNumber(InvoiceNumber) != null ? InvoiceNumber.Trim() : string.Empty);
+
+            if (string.IsNullOrWhiteSpace(targetNumber) && PromptInvoiceNumberToCancel != null)
+            {
+                targetNumber = PromptInvoiceNumberToCancel("اكتب رقم الفاتورة المراد إلغاؤها:") ?? string.Empty;
+            }
+
+            if (string.IsNullOrWhiteSpace(targetNumber))
+            {
+                SetStatus("اكتب رقم الفاتورة في خانة الفاتورة الأصلية أو حدد رقمها للإلغاء.", false);
+                return;
+            }
+
+            CancelInvoiceByNumber(targetNumber, out _);
         }
 
         public void RemoveItem(SalesItemRow? row)

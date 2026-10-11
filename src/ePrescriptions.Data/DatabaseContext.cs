@@ -17,7 +17,7 @@ namespace ePrescriptions.Data
         /// <summary>
         /// آخر إصدار للمخطط (عدد ملفات الـ Migrations المطبقة)
         /// </summary>
-        public const int LatestSchemaVersion = 10;
+        public const int LatestSchemaVersion = 11;
 
         private readonly string _connectionString;
         private readonly bool _isInMemory;
@@ -178,6 +178,24 @@ namespace ePrescriptions.Data
                     ExecuteSqlScript(conn, script010);
                     SetUserVersion(conn, 10);
                     Logger.LogInfo("تم تطبيق Migration 010 بنجاح.", "DatabaseContext");
+                }
+
+                if (currentVersion < 11)
+                {
+                    // تطبيق Migration 011: إضافة عمود Status إلى جدول Invoices (1 = Active, 2 = Cancelled)
+                    bool alreadyHasStatus = false;
+                    using (var checkCmd = conn.CreateCommand())
+                    {
+                        checkCmd.CommandText = "SELECT COUNT(*) FROM pragma_table_info('Invoices') WHERE name = 'Status';";
+                        alreadyHasStatus = Convert.ToInt64(checkCmd.ExecuteScalar() ?? 0) > 0;
+                    }
+                    if (!alreadyHasStatus)
+                    {
+                        string script011 = ReadEmbeddedSql("011_InvoiceStatusAndCancellation.sql");
+                        ExecuteSqlScript(conn, script011);
+                    }
+                    SetUserVersion(conn, 11);
+                    Logger.LogInfo("تم تطبيق Migration 011 بنجاح.", "DatabaseContext");
                 }
 
                 trans.Commit();

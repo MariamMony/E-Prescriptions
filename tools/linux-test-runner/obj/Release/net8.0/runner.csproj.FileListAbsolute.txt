@@ -1,0 +1,13 @@
+/app/applet/tools/linux-test-runner/bin/Release/net8.0/runner.deps.json
+/app/applet/tools/linux-test-runner/bin/Release/net8.0/runner.runtimeconfig.json
+/app/applet/tools/linux-test-runner/bin/Release/net8.0/runner.dll
+/app/applet/tools/linux-test-runner/bin/Release/net8.0/runner.pdb
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/runner.GeneratedMSBuildEditorConfig.editorconfig
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/runner.AssemblyInfoInputs.cache
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/runner.AssemblyInfo.cs
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/runner.csproj.CoreCompileInputs.cache
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/runner.dll
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/refint/runner.dll
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/runner.pdb
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/runner.genruntimeconfig.cache
+/app/applet/tools/linux-test-runner/obj/Release/net8.0/ref/runner.dll

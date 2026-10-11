@@ -75,19 +75,22 @@ namespace ePrescriptions.Data.Repositories
                     ValidateSale(invoice, conn, trans);
 
                 string qrCol = TableHasColumn(conn, "Invoices", "QrCodeText") ? "QrCodeText" : "ZatcaQrBase64";
+                bool hasStatus = TableHasColumn(conn, "Invoices", "Status");
+                string statusCol = hasStatus ? ", Status" : "";
+                string statusVal = hasStatus ? ", @status" : "";
 
                 // 1) حفظ رأس الفاتورة
                 using var insertInvoiceCmd = conn.CreateCommand();
                 insertInvoiceCmd.Transaction = trans;
                 insertInvoiceCmd.CommandText = $@"
                     INSERT INTO Invoices (
-                        InvoiceNumber, Type, Date, CustomerId, CustomerName, CustomerPhone,
+                        InvoiceNumber, Type{statusCol}, Date, CustomerId, CustomerName, CustomerPhone,
                         PriceCategory, PaymentMethod, PrescriptionNumber, DoctorName,
                         UserId, UserName, ShiftId, SubtotalPiastres, DiscountPiastres,
                         VatPiastres, TotalPiastres, PaidPiastres, RemainingPiastres, Notes, {qrCol},
                         OriginalInvoiceId
                     ) VALUES (
-                        @num, @type, @date, @cId, @cName, @cPhone,
+                        @num, @type{statusVal}, @date, @cId, @cName, @cPhone,
                         @pCat, @pMethod, @rxNum, @docName,
                         @uId, @uName, @sId, @sub, @disc,
                         @vat, @total, @paid, @rem, @notes, @qr,
@@ -97,6 +100,7 @@ namespace ePrescriptions.Data.Repositories
 
                 insertInvoiceCmd.Parameters.AddWithValue("@num", invoice.InvoiceNumber);
                 insertInvoiceCmd.Parameters.AddWithValue("@type", (int)invoice.Type);
+                if (hasStatus) insertInvoiceCmd.Parameters.AddWithValue("@status", (int)invoice.Status);
                 insertInvoiceCmd.Parameters.AddWithValue("@date", invoice.Date.ToString("yyyy-MM-dd HH:mm:ss"));
                 insertInvoiceCmd.Parameters.AddWithValue("@cId", (object?)invoice.CustomerId ?? DBNull.Value);
                 insertInvoiceCmd.Parameters.AddWithValue("@cName", invoice.CustomerName);
@@ -469,8 +473,10 @@ namespace ePrescriptions.Data.Repositories
             var inv = new Invoice();
             using (var cmd = conn.CreateCommand())
             {
-                cmd.CommandText = @"
-                    SELECT Id, InvoiceNumber, Type, Date, CustomerId, CustomerName, CustomerPhone,
+                bool hasStatus = TableHasColumn(conn, "Invoices", "Status");
+                string statusSelect = hasStatus ? "Status, " : "";
+                cmd.CommandText = $@"
+                    SELECT Id, InvoiceNumber, Type, {statusSelect}Date, CustomerId, CustomerName, CustomerPhone,
                            PriceCategory, PaymentMethod, PrescriptionNumber, DoctorName, UserId, UserName, ShiftId,
                            SubtotalPiastres, DiscountPiastres, VatPiastres, TotalPiastres, PaidPiastres, RemainingPiastres
                     FROM Invoices WHERE InvoiceNumber = @n COLLATE NOCASE;";
@@ -485,6 +491,10 @@ namespace ePrescriptions.Data.Repositories
                 inv.Id = Convert.ToInt32(r["Id"]);
                 inv.InvoiceNumber = r["InvoiceNumber"].ToString() ?? string.Empty;
                 inv.Type = (InvoiceType)Convert.ToInt32(r["Type"]);
+                if (hasStatus)
+                {
+                    inv.Status = (InvoiceStatus)Convert.ToInt32(r["Status"]);
+                }
                 inv.Date = DateTime.Parse(r["Date"].ToString() ?? DateTime.Now.ToString("s"));
                 inv.CustomerId = r["CustomerId"] == DBNull.Value ? (int?)null : Convert.ToInt32(r["CustomerId"]);
                 inv.CustomerName = r["CustomerName"].ToString() ?? string.Empty;
@@ -502,6 +512,12 @@ namespace ePrescriptions.Data.Repositories
                 inv.TotalPiastres = Convert.ToInt64(r["TotalPiastres"]);
                 inv.PaidPiastres = Convert.ToInt64(r["PaidPiastres"]);
                 inv.RemainingPiastres = Convert.ToInt64(r["RemainingPiastres"]);
+            }
+
+            if (inv.Status == InvoiceStatus.Cancelled)
+            {
+                errorMessage = "الفاتورة دي ملغاة، لا يمكن عمل مرتجع منها.";
+                return null;
             }
 
             if (inv.Type != InvoiceType.Sales)
@@ -560,6 +576,281 @@ namespace ePrescriptions.Data.Repositories
             }
 
             return result;
+        }
+
+        private Invoice? LoadInvoice(SQLiteConnection conn, string whereClause, (string Param, object Value) param)
+        {
+            var inv = new Invoice();
+            bool hasStatus = TableHasColumn(conn, "Invoices", "Status");
+            bool hasOrig = TableHasColumn(conn, "Invoices", "OriginalInvoiceId");
+            string qrCol = TableHasColumn(conn, "Invoices", "QrCodeText") ? "QrCodeText" : "ZatcaQrBase64";
+            string statusCol = hasStatus ? ", Status" : "";
+            string origCol = hasOrig ? ", OriginalInvoiceId" : "";
+
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = $@"
+                    SELECT Id, InvoiceNumber, Type{statusCol}, Date, CustomerId, CustomerName, CustomerPhone,
+                           PriceCategory, PaymentMethod, PrescriptionNumber, DoctorName, UserId, UserName, ShiftId,
+                           SubtotalPiastres, DiscountPiastres, VatPiastres, TotalPiastres, PaidPiastres, RemainingPiastres,
+                           Notes{origCol}, {qrCol}
+                    FROM Invoices WHERE {whereClause};";
+                cmd.Parameters.AddWithValue(param.Param, param.Value);
+                using var r = cmd.ExecuteReader();
+                if (!r.Read()) return null;
+
+                inv.Id = Convert.ToInt32(r["Id"]);
+                inv.InvoiceNumber = r["InvoiceNumber"].ToString() ?? string.Empty;
+                inv.Type = (InvoiceType)Convert.ToInt32(r["Type"]);
+                inv.Status = hasStatus && r["Status"] != DBNull.Value ? (InvoiceStatus)Convert.ToInt32(r["Status"]) : InvoiceStatus.Active;
+                inv.Date = DateTime.Parse(r["Date"].ToString() ?? DateTime.Now.ToString("s"));
+                inv.CustomerId = r["CustomerId"] == DBNull.Value ? (int?)null : Convert.ToInt32(r["CustomerId"]);
+                inv.CustomerName = r["CustomerName"].ToString() ?? string.Empty;
+                inv.CustomerPhone = r["CustomerPhone"].ToString() ?? string.Empty;
+                inv.PriceCategory = (PriceCategory)Convert.ToInt32(r["PriceCategory"]);
+                inv.PaymentMethod = (PaymentMethod)Convert.ToInt32(r["PaymentMethod"]);
+                inv.PrescriptionNumber = r["PrescriptionNumber"] == DBNull.Value ? null : r["PrescriptionNumber"].ToString();
+                inv.DoctorName = r["DoctorName"] == DBNull.Value ? null : r["DoctorName"].ToString();
+                inv.UserId = Convert.ToInt32(r["UserId"]);
+                inv.UserName = r["UserName"].ToString() ?? string.Empty;
+                inv.ShiftId = Convert.ToInt32(r["ShiftId"]);
+                inv.SubtotalPiastres = Convert.ToInt64(r["SubtotalPiastres"]);
+                inv.DiscountPiastres = Convert.ToInt64(r["DiscountPiastres"]);
+                inv.VatPiastres = Convert.ToInt64(r["VatPiastres"]);
+                inv.TotalPiastres = Convert.ToInt64(r["TotalPiastres"]);
+                inv.PaidPiastres = Convert.ToInt64(r["PaidPiastres"]);
+                inv.RemainingPiastres = Convert.ToInt64(r["RemainingPiastres"]);
+                inv.Notes = r["Notes"] == DBNull.Value ? null : r["Notes"].ToString();
+                if (hasOrig) inv.OriginalInvoiceId = r["OriginalInvoiceId"] == DBNull.Value ? (int?)null : Convert.ToInt32(r["OriginalInvoiceId"]);
+                inv.QrCodeText = r[qrCol] == DBNull.Value ? null : r[qrCol].ToString();
+            }
+
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = @"
+                    SELECT Id, InvoiceId, ItemId, ItemCode, ItemNameAr, BatchId, BatchNumber, ExpiryDate,
+                           UnitLevel, QuantitySold, SmallestUnitsCount, UnitPricePiastres, DiscountPiastres,
+                           VatRatePercent, VatPiastres, TotalPiastres, OriginalInvoiceItemId, PrescriptionNumber, DoctorName
+                    FROM InvoiceItems
+                    WHERE InvoiceId = @id
+                    ORDER BY Id ASC;";
+                cmd.Parameters.AddWithValue("@id", inv.Id);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    string exp = r["ExpiryDate"]?.ToString() ?? string.Empty;
+                    inv.Items.Add(new InvoiceItem
+                    {
+                        Id = Convert.ToInt32(r["Id"]),
+                        InvoiceId = inv.Id,
+                        ItemId = Convert.ToInt32(r["ItemId"]),
+                        ItemCode = r["ItemCode"].ToString() ?? string.Empty,
+                        ItemNameAr = r["ItemNameAr"].ToString() ?? string.Empty,
+                        BatchId = r["BatchId"] == DBNull.Value ? (int?)null : Convert.ToInt32(r["BatchId"]),
+                        BatchNumber = r["BatchNumber"].ToString() ?? string.Empty,
+                        ExpiryDate = string.IsNullOrWhiteSpace(exp) ? (DateTime?)null : DateTime.Parse(exp),
+                        UnitLevel = (UnitLevel)Convert.ToInt32(r["UnitLevel"]),
+                        QuantitySold = Convert.ToInt32(r["QuantitySold"]),
+                        SmallestUnitsCount = Convert.ToInt32(r["SmallestUnitsCount"]),
+                        UnitPricePiastres = Convert.ToInt64(r["UnitPricePiastres"]),
+                        DiscountPiastres = Convert.ToInt64(r["DiscountPiastres"]),
+                        VatRatePercent = Convert.ToInt32(r["VatRatePercent"]),
+                        VatPiastres = Convert.ToInt64(r["VatPiastres"]),
+                        TotalPiastres = Convert.ToInt64(r["TotalPiastres"]),
+                        OriginalInvoiceItemId = r["OriginalInvoiceItemId"] == DBNull.Value ? (int?)null : Convert.ToInt32(r["OriginalInvoiceItemId"]),
+                        PrescriptionNumber = r["PrescriptionNumber"] == DBNull.Value ? null : r["PrescriptionNumber"].ToString(),
+                        DoctorName = r["DoctorName"] == DBNull.Value ? null : r["DoctorName"].ToString()
+                    });
+                }
+            }
+
+            return inv;
+        }
+
+        public Invoice? GetInvoiceById(int id)
+        {
+            using var conn = _dbContext.CreateConnection();
+            return LoadInvoice(conn, "Id = @val", ("@val", id));
+        }
+
+        public Invoice? GetInvoiceByNumber(string invoiceNumber)
+        {
+            using var conn = _dbContext.CreateConnection();
+            return LoadInvoice(conn, "InvoiceNumber = @val COLLATE NOCASE", ("@val", (invoiceNumber ?? string.Empty).Trim()));
+        }
+
+        /// <summary>
+        /// إلغاء فاتورة مبيعات: يرجّع المخزون بنظام تتبع التشغيلات، يعكس رصيد العميل الآجل ومجاميع الوردية،
+        /// يعكس القيد المحاسبي، ويُسجَّل في سجل التدقيق (Admin في سجل الموظفين، Owner في سجله الخاص).
+        /// </summary>
+        public bool CancelInvoice(
+            int invoiceId,
+            int cancellingUserId,
+            string cancellingUserName,
+            UserRole cancellingUserRole,
+            out string errorMessage,
+            OwnerAuditLogRepository? ownerAuditRepo = null,
+            StaffAuditLogRepository? staffAuditRepo = null)
+        {
+            errorMessage = string.Empty;
+
+            if (cancellingUserRole != UserRole.Admin && cancellingUserRole != UserRole.Owner)
+            {
+                errorMessage = "إلغاء الفاتورة يتطلب صلاحية مدير النظام (Admin) أو صاحب الصيدلية (Owner).";
+                return false;
+            }
+
+            var invoice = GetInvoiceById(invoiceId);
+            if (invoice == null)
+            {
+                errorMessage = "الفاتورة غير موجودة.";
+                return false;
+            }
+
+            if (invoice.Status == InvoiceStatus.Cancelled)
+            {
+                errorMessage = "الفاتورة ملغاة بالفعل.";
+                return false;
+            }
+
+            using var conn = _dbContext.CreateConnection();
+            using var trans = conn.BeginTransaction();
+            try
+            {
+                // التحقق من عدم وجود مرتجعات سارية على هذه الفاتورة
+                using (var checkReturnsCmd = conn.CreateCommand())
+                {
+                    checkReturnsCmd.Transaction = trans;
+                    checkReturnsCmd.CommandText = "SELECT COUNT(*) FROM Invoices WHERE OriginalInvoiceId = @id AND Status != @can;";
+                    checkReturnsCmd.Parameters.AddWithValue("@id", invoice.Id);
+                    checkReturnsCmd.Parameters.AddWithValue("@can", (int)InvoiceStatus.Cancelled);
+                    long returnsCount = Convert.ToInt64(checkReturnsCmd.ExecuteScalar() ?? 0);
+                    if (returnsCount > 0)
+                    {
+                        throw new InvalidOperationException("لا يمكن إلغاء الفاتورة لوجود مرتجعات مسجلة عليها.");
+                    }
+                }
+
+                // 1) تحديث حالة الفاتورة إلى ملغاة
+                using (var updateStatusCmd = conn.CreateCommand())
+                {
+                    updateStatusCmd.Transaction = trans;
+                    updateStatusCmd.CommandText = "UPDATE Invoices SET Status = @can WHERE Id = @id;";
+                    updateStatusCmd.Parameters.AddWithValue("@can", (int)InvoiceStatus.Cancelled);
+                    updateStatusCmd.Parameters.AddWithValue("@id", invoice.Id);
+                    updateStatusCmd.ExecuteNonQuery();
+                }
+
+                // 2) إرجاع المخزون (لفاتورة البيع)
+                if (invoice.Type == InvoiceType.Sales)
+                {
+                    foreach (var item in invoice.Items)
+                    {
+                        _itemRepository.RestoreForInvoiceItem(item.Id, item.ItemId, item.SmallestUnitsCount, item.BatchNumber, conn, trans);
+                    }
+                }
+
+                // 3) عكس رصيد العميل الآجل
+                if (invoice.CustomerId.HasValue && invoice.CustomerId.Value > 1 && invoice.RemainingPiastres > 0)
+                {
+                    long delta = invoice.Type == InvoiceType.Return ? invoice.RemainingPiastres : -invoice.RemainingPiastres;
+                    using var updateCustomerCmd = conn.CreateCommand();
+                    updateCustomerCmd.Transaction = trans;
+                    updateCustomerCmd.CommandText = @"
+                        UPDATE Customers
+                        SET CurrentBalancePiastres = CurrentBalancePiastres + @delta
+                        WHERE Id = @cId;";
+                    updateCustomerCmd.Parameters.AddWithValue("@delta", delta);
+                    updateCustomerCmd.Parameters.AddWithValue("@cId", invoice.CustomerId.Value);
+                    updateCustomerCmd.ExecuteNonQuery();
+                }
+
+                // 4) عكس مجاميع الوردية
+                if (invoice.ShiftId > 0)
+                {
+                    using var updateShiftCmd = conn.CreateCommand();
+                    updateShiftCmd.Transaction = trans;
+                    if (invoice.Type == InvoiceType.Return)
+                    {
+                        updateShiftCmd.CommandText = @"
+                            UPDATE Shifts
+                            SET TotalReturnsCashPiastres = MAX(0, TotalReturnsCashPiastres - (CASE WHEN @pMethod = 1 THEN @amt ELSE 0 END)),
+                                ExpectedCashPiastres = ExpectedCashPiastres + (CASE WHEN @pMethod = 1 THEN @amt ELSE 0 END)
+                            WHERE Id = @sId;";
+                    }
+                    else
+                    {
+                        string columnToUpdate = invoice.PaymentMethod switch
+                        {
+                            PaymentMethod.Cash => "TotalSalesCashPiastres",
+                            PaymentMethod.Network => "TotalSalesNetworkPiastres",
+                            PaymentMethod.OnAccount => "TotalSalesOnAccountPiastres",
+                            _ => "TotalSalesCashPiastres"
+                        };
+
+                        updateShiftCmd.CommandText = $@"
+                            UPDATE Shifts
+                            SET {columnToUpdate} = MAX(0, {columnToUpdate} - @amt),
+                                ExpectedCashPiastres = ExpectedCashPiastres - (CASE WHEN @pMethod = 1 THEN @amt ELSE 0 END)
+                            WHERE Id = @sId;";
+                    }
+
+                    updateShiftCmd.Parameters.AddWithValue("@amt", invoice.TotalPiastres);
+                    updateShiftCmd.Parameters.AddWithValue("@pMethod", (int)invoice.PaymentMethod);
+                    updateShiftCmd.Parameters.AddWithValue("@sId", invoice.ShiftId);
+                    updateShiftCmd.ExecuteNonQuery();
+                }
+
+                // 5) عكس القيود المحاسبية
+                JournalPosting.PostInvoiceCancellation(conn, trans, invoice);
+
+                trans.Commit();
+
+                // 6) تسجيل العملية في سجل التدقيق
+                string entityId = invoice.Id.ToString();
+                string entityLabel = invoice.InvoiceNumber;
+                string oldValue = "نشطة (Active)";
+                string newValue = $"ملغاة (بواسطة: {cancellingUserName})";
+
+                if (cancellingUserRole == UserRole.Owner)
+                {
+                    ownerAuditRepo?.LogChange(cancellingUserId, "Invoices", entityId, entityLabel, "Status", oldValue, newValue);
+                }
+                else
+                {
+                    staffAuditRepo?.LogChange(cancellingUserId, cancellingUserName, cancellingUserRole.ToString(),
+                        "Invoices", entityId, entityLabel, "Status", oldValue, newValue);
+                }
+
+                invoice.Status = InvoiceStatus.Cancelled;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                trans.Rollback();
+                errorMessage = ex.Message;
+                if (ex is not InvalidOperationException)
+                    Logger.LogException(ex, "CancelInvoice");
+                return false;
+            }
+        }
+
+        public bool CancelInvoice(
+            string invoiceNumber,
+            int cancellingUserId,
+            string cancellingUserName,
+            UserRole cancellingUserRole,
+            out string errorMessage,
+            OwnerAuditLogRepository? ownerAuditRepo = null,
+            StaffAuditLogRepository? staffAuditRepo = null)
+        {
+            var inv = GetInvoiceByNumber(invoiceNumber);
+            if (inv == null)
+            {
+                errorMessage = $"لا توجد فاتورة بالرقم {invoiceNumber}.";
+                return false;
+            }
+            return CancelInvoice(inv.Id, cancellingUserId, cancellingUserName, cancellingUserRole, out errorMessage, ownerAuditRepo, staffAuditRepo);
         }
 
         public void SaveSuspendedInvoice(SuspendedInvoice suspended)

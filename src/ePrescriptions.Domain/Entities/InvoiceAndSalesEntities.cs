@@ -9,6 +9,7 @@ namespace ePrescriptions.Domain.Entities
         public int Id { get; set; }
         public string InvoiceNumber { get; set; } = string.Empty;
         public InvoiceType Type { get; set; } = InvoiceType.Sales;
+        public InvoiceStatus Status { get; set; } = InvoiceStatus.Active;
         public DateTime Date { get; set; } = DateTime.Now;
 
         // العميل

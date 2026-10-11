@@ -21,7 +21,11 @@ namespace ePrescriptions.Tests
             DatabaseContext.DefaultDatabaseDirectory.Should().Be(AppPaths.DataDirectory);
             AppPaths.LogsDirectory.Should().Be(Path.Combine(AppPaths.DataDirectory, "logs"));
             AppPaths.BackupsDirectory.Should().Be(Path.Combine(AppPaths.DataDirectory, "backups"));
-            DatabaseContext.DefaultDatabasePath.Contains(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)).Should().BeFalse();
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (!string.IsNullOrEmpty(appData))
+            {
+                DatabaseContext.DefaultDatabasePath.Contains(appData).Should().BeFalse();
+            }
         }
 
         private static (string Legacy, string New) TempDirs()

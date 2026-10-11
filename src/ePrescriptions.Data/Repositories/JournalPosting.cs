@@ -120,6 +120,33 @@ namespace ePrescriptions.Data.Repositories
                 Post(conn, trans, inv.InvoiceNumber, inv.Date, $"فاتورة مبيعات رقم {inv.InvoiceNumber}", settle, revenue);
         }
 
+        /// <summary>
+        /// إلغاء فاتورة: يعكس القيد المحاسبي الأصلي تماماً
+        /// </summary>
+        public static void PostInvoiceCancellation(SQLiteConnection conn, SQLiteTransaction trans, Invoice inv)
+        {
+            long total = inv.TotalPiastres;
+            if (total <= 0) return;
+            long vat = Math.Max(0, Math.Min(inv.VatPiastres, total));
+            long net = total - vat;
+            long receivable = Math.Max(0, Math.Min(inv.RemainingPiastres, total));
+            if (inv.PaymentMethod == PaymentMethod.Insurance) receivable = 0;
+            long paid = total - receivable;
+
+            var settle = new List<Leg>();
+            if (paid > 0) settle.Add(new Leg(PaymentAccount(inv.PaymentMethod), paid));
+            if (receivable > 0) settle.Add(new Leg(Accounts.Customers, receivable));
+
+            var revenue = new List<Leg>();
+            if (net > 0) revenue.Add(new Leg(inv.Type == InvoiceType.Return ? Accounts.SalesReturns : Accounts.SalesRevenue, net));
+            if (vat > 0) revenue.Add(new Leg(Accounts.VatPayable, vat));
+
+            if (inv.Type == InvoiceType.Return)
+                Post(conn, trans, "CNL-" + inv.InvoiceNumber, DateTime.Now, $"إلغاء مرتجع مبيعات رقم {inv.InvoiceNumber}", settle, revenue);
+            else
+                Post(conn, trans, "CNL-" + inv.InvoiceNumber, DateTime.Now, $"إلغاء فاتورة مبيعات رقم {inv.InvoiceNumber}", revenue, settle);
+        }
+
         /// <summary>مشتريات: مدين مخزون (الإجمالي شامل الضريبة)، دائن نقدية (المدفوع) + موردين (المتبقي)</summary>
         public static void PostPurchaseInvoice(SQLiteConnection conn, SQLiteTransaction trans, PurchaseInvoice inv)
         {
