@@ -15,24 +15,50 @@ namespace ePrescriptions.Data.Repositories
             _dbContext = dbContext;
         }
 
-        public string GenerateNextExpenseNumber()
+        public string GenerateNextExpenseNumber(int? year = null)
         {
-            string year = DateTime.Now.Year.ToString();
+            int targetYear = year ?? DateTime.Now.Year;
+            string prefix = "EXP";
+            string pattern = $"{prefix}-{targetYear}-%";
             using var conn = _dbContext.CreateConnection();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT COUNT(*) FROM Expenses;";
-            long count = Convert.ToInt64(cmd.ExecuteScalar() ?? 0) + 1;
-            return $"EXP-{year}-{count:D5}";
+            cmd.CommandText = "SELECT ExpenseNumber FROM Expenses WHERE ExpenseNumber LIKE @pattern;";
+            cmd.Parameters.AddWithValue("@pattern", pattern);
+            int maxSeq = 0;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                string num = r[0]?.ToString() ?? "";
+                var parts = num.Split('-');
+                if (parts.Length >= 3 && int.TryParse(parts[2], out int seq))
+                {
+                    if (seq > maxSeq) maxSeq = seq;
+                }
+            }
+            return $"{prefix}-{targetYear}-{(maxSeq + 1):D5}";
         }
 
-        public string GenerateNextJournalEntryNumber()
+        public string GenerateNextJournalEntryNumber(int? year = null)
         {
-            string year = DateTime.Now.Year.ToString();
+            int targetYear = year ?? DateTime.Now.Year;
+            string prefix = "JV";
+            string pattern = $"{prefix}-{targetYear}-%";
             using var conn = _dbContext.CreateConnection();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT COUNT(*) FROM JournalEntries;";
-            long count = Convert.ToInt64(cmd.ExecuteScalar() ?? 0) + 1;
-            return $"JV-{year}-{count:D5}";
+            cmd.CommandText = "SELECT EntryNumber FROM JournalEntries WHERE EntryNumber LIKE @pattern;";
+            cmd.Parameters.AddWithValue("@pattern", pattern);
+            int maxSeq = 0;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                string num = r[0]?.ToString() ?? "";
+                var parts = num.Split('-');
+                if (parts.Length >= 3 && int.TryParse(parts[2], out int seq))
+                {
+                    if (seq > maxSeq) maxSeq = seq;
+                }
+            }
+            return $"{prefix}-{targetYear}-{(maxSeq + 1):D5}";
         }
 
         public void AddExpense(Expense expense)

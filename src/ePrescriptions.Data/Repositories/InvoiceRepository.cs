@@ -19,18 +19,131 @@ namespace ePrescriptions.Data.Repositories
             _itemRepository = itemRepository;
         }
 
-        public string GenerateNextInvoiceNumber(InvoiceType type)
+        public string GenerateNextInvoiceNumber(InvoiceType type, int? year = null, SQLiteConnection? conn = null, SQLiteTransaction? trans = null)
         {
             string prefix = type == InvoiceType.Sales ? "INV" : "RET";
-            string year = DateTime.Now.Year.ToString();
+            int targetYear = year ?? DateTime.Now.Year;
 
-            using var conn = _dbContext.CreateConnection();
+            bool ownsConnection = conn == null;
+            var connection = conn ?? _dbContext.CreateConnection();
+            try
+            {
+                bool hasTable = false;
+                using (var checkCmd = connection.CreateCommand())
+                {
+                    if (trans != null) checkCmd.Transaction = trans;
+                    checkCmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='InvoiceCounters';";
+                    hasTable = Convert.ToInt64(checkCmd.ExecuteScalar() ?? 0) > 0;
+                }
+
+                int nextNumber;
+                if (hasTable)
+                {
+                    // فحص وجود سجل العداد مسبقاً
+                    object? existingScalar = null;
+                    using (var readCmd = connection.CreateCommand())
+                    {
+                        if (trans != null) readCmd.Transaction = trans;
+                        readCmd.CommandText = "SELECT LastNumber FROM InvoiceCounters WHERE Type = @type AND Year = @year;";
+                        readCmd.Parameters.AddWithValue("@type", (int)type);
+                        readCmd.Parameters.AddWithValue("@year", targetYear);
+                        existingScalar = readCmd.ExecuteScalar();
+                    }
+
+                    if (existingScalar != null && existingScalar != DBNull.Value)
+                    {
+                        int current = Convert.ToInt32(existingScalar);
+                        int maxInInvoices = GetMaxSequenceFromInvoices(connection, trans, prefix, targetYear);
+                        nextNumber = Math.Max(current, maxInInvoices) + 1;
+
+                        using var updCmd = connection.CreateCommand();
+                        if (trans != null) updCmd.Transaction = trans;
+                        updCmd.CommandText = @"
+                            UPDATE InvoiceCounters 
+                            SET LastNumber = @next 
+                            WHERE Type = @type AND Year = @year;";
+                        updCmd.Parameters.AddWithValue("@type", (int)type);
+                        updCmd.Parameters.AddWithValue("@year", targetYear);
+                        updCmd.Parameters.AddWithValue("@next", nextNumber);
+                        updCmd.ExecuteNonQuery();
+                    }
+                    else
+                    {
+                        int maxExisting = GetMaxSequenceFromInvoices(connection, trans, prefix, targetYear);
+                        nextNumber = maxExisting + 1;
+
+                        using var insCmd = connection.CreateCommand();
+                        if (trans != null) insCmd.Transaction = trans;
+                        insCmd.CommandText = @"
+                            INSERT INTO InvoiceCounters (Type, Year, LastNumber)
+                            VALUES (@type, @year, @lastNum);";
+                        insCmd.Parameters.AddWithValue("@type", (int)type);
+                        insCmd.Parameters.AddWithValue("@year", targetYear);
+                        insCmd.Parameters.AddWithValue("@lastNum", nextNumber);
+                        try
+                        {
+                            insCmd.ExecuteNonQuery();
+                        }
+                        catch
+                        {
+                            // في حال حدوث تعارض تزامني أثناء الإدراج نقوم بالتحديث
+                            using var updRetry = connection.CreateCommand();
+                            if (trans != null) updRetry.Transaction = trans;
+                            updRetry.CommandText = @"
+                                UPDATE InvoiceCounters 
+                                SET LastNumber = LastNumber + 1 
+                                WHERE Type = @type AND Year = @year;";
+                            updRetry.Parameters.AddWithValue("@type", (int)type);
+                            updRetry.Parameters.AddWithValue("@year", targetYear);
+                            updRetry.ExecuteNonQuery();
+
+                            using var readAgain = connection.CreateCommand();
+                            if (trans != null) readAgain.Transaction = trans;
+                            readAgain.CommandText = "SELECT LastNumber FROM InvoiceCounters WHERE Type = @type AND Year = @year;";
+                            readAgain.Parameters.AddWithValue("@type", (int)type);
+                            readAgain.Parameters.AddWithValue("@year", targetYear);
+                            nextNumber = Convert.ToInt32(readAgain.ExecuteScalar() ?? (nextNumber + 1));
+                        }
+                    }
+                }
+                else
+                {
+                    // في حال عدم وجود جدول العدادات
+                    int maxExisting = GetMaxSequenceFromInvoices(connection, trans, prefix, targetYear);
+                    nextNumber = maxExisting + 1;
+                }
+
+                return $"{prefix}-{targetYear}-{nextNumber:D5}";
+            }
+            finally
+            {
+                if (ownsConnection)
+                {
+                    connection.Dispose();
+                }
+            }
+        }
+
+        private static int GetMaxSequenceFromInvoices(SQLiteConnection conn, SQLiteTransaction? trans, string prefix, int year)
+        {
+            string pattern = $"{prefix}-{year}-%";
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT COUNT(*) FROM Invoices WHERE Type = @type;";
-            cmd.Parameters.AddWithValue("@type", (int)type);
-            long count = Convert.ToInt64(cmd.ExecuteScalar() ?? 0) + 1;
+            if (trans != null) cmd.Transaction = trans;
+            cmd.CommandText = "SELECT InvoiceNumber FROM Invoices WHERE InvoiceNumber LIKE @pattern;";
+            cmd.Parameters.AddWithValue("@pattern", pattern);
 
-            return $"{prefix}-{year}-{count:D5}";
+            int maxSeq = 0;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                string num = r[0]?.ToString() ?? "";
+                var parts = num.Split('-');
+                if (parts.Length >= 3 && int.TryParse(parts[2], out int seq))
+                {
+                    if (seq > maxSeq) maxSeq = seq;
+                }
+            }
+            return maxSeq;
         }
 
         private static bool TableHasColumn(SQLiteConnection conn, string table, string column)
@@ -78,6 +191,34 @@ namespace ePrescriptions.Data.Repositories
                 bool hasStatus = TableHasColumn(conn, "Invoices", "Status");
                 string statusCol = hasStatus ? ", Status" : "";
                 string statusVal = hasStatus ? ", @status" : "";
+
+                // التأكد من صحة رقم الفاتورة وعدم تكراره وتوليد رقم جديد عند الحاجة
+                if (string.IsNullOrWhiteSpace(invoice.InvoiceNumber))
+                {
+                    invoice.InvoiceNumber = GenerateNextInvoiceNumber(invoice.Type, invoice.Date.Year, conn, trans);
+                }
+                else
+                {
+                    using var checkCmd = conn.CreateCommand();
+                    checkCmd.Transaction = trans;
+                    checkCmd.CommandText = "SELECT COUNT(*) FROM Invoices WHERE InvoiceNumber = @num COLLATE NOCASE;";
+                    checkCmd.Parameters.AddWithValue("@num", invoice.InvoiceNumber.Trim());
+                    long exists = Convert.ToInt64(checkCmd.ExecuteScalar() ?? 0);
+                    if (exists > 0)
+                    {
+                        string prefix = invoice.Type == InvoiceType.Sales ? "INV" : "RET";
+                        if (invoice.InvoiceNumber.Trim().StartsWith(prefix + "-", StringComparison.OrdinalIgnoreCase))
+                        {
+                            invoice.InvoiceNumber = GenerateNextInvoiceNumber(invoice.Type, invoice.Date.Year, conn, trans);
+                        }
+                        else
+                        {
+                            errorMessage = $"رقم الفاتورة '{invoice.InvoiceNumber}' مستخدم بالفعل.";
+                            trans.Rollback();
+                            return false;
+                        }
+                    }
+                }
 
                 // 1) حفظ رأس الفاتورة
                 using var insertInvoiceCmd = conn.CreateCommand();

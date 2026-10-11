@@ -31,6 +31,7 @@ namespace System.Data.SQLite
         [DllImport(L)] public static extern int sqlite3_column_bytes(IntPtr s, int i);
         [DllImport(L)] public static extern IntPtr sqlite3_column_name(IntPtr s, int i);
         [DllImport(L)] public static extern long sqlite3_last_insert_rowid(IntPtr db);
+        [DllImport(L)] public static extern int sqlite3_changes(IntPtr db);
         public static byte[] Z(string s) { var b = Encoding.UTF8.GetBytes(s); var r = new byte[b.Length + 1]; Array.Copy(b, r, b.Length); return r; }
         public static string S(IntPtr p) => p == IntPtr.Zero ? "" : Marshal.PtrToStringUTF8(p) ?? "";
     }
@@ -177,7 +178,7 @@ namespace System.Data.SQLite
             finally { h.Free(); }
         }
 
-        public int ExecuteNonQuery() { Run(false); return 0; }
+        public int ExecuteNonQuery() { Run(false); return N.sqlite3_changes(_c.Db); }
         public object? ExecuteScalar()
         {
             var (s, hasRow) = Run(true);

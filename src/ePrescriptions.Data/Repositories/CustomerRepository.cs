@@ -83,14 +83,27 @@ namespace ePrescriptions.Data.Repositories
             cmd.ExecuteNonQuery();
         }
 
-        public string GenerateNextCustomerVoucherNumber()
+        public string GenerateNextCustomerVoucherNumber(int? year = null)
         {
-            string year = DateTime.Now.Year.ToString();
+            int targetYear = year ?? DateTime.Now.Year;
+            string prefix = "CV";
+            string pattern = $"{prefix}-{targetYear}-%";
             using var conn = _dbContext.CreateConnection();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT COUNT(*) FROM CustomerVouchers;";
-            long count = Convert.ToInt64(cmd.ExecuteScalar() ?? 0) + 1;
-            return $"CV-{year}-{count:D5}";
+            cmd.CommandText = "SELECT VoucherNumber FROM CustomerVouchers WHERE VoucherNumber LIKE @pattern;";
+            cmd.Parameters.AddWithValue("@pattern", pattern);
+            int maxSeq = 0;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                string num = r[0]?.ToString() ?? "";
+                var parts = num.Split('-');
+                if (parts.Length >= 3 && int.TryParse(parts[2], out int seq))
+                {
+                    if (seq > maxSeq) maxSeq = seq;
+                }
+            }
+            return $"{prefix}-{targetYear}-{(maxSeq + 1):D5}";
         }
 
         public bool AddCustomerVoucher(CustomerVoucher voucher)

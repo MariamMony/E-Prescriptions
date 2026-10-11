@@ -17,7 +17,7 @@ namespace ePrescriptions.Data
         /// <summary>
         /// آخر إصدار للمخطط (عدد ملفات الـ Migrations المطبقة)
         /// </summary>
-        public const int LatestSchemaVersion = 11;
+        public const int LatestSchemaVersion = 12;
 
         private readonly string _connectionString;
         private readonly bool _isInMemory;
@@ -196,6 +196,15 @@ namespace ePrescriptions.Data
                     }
                     SetUserVersion(conn, 11);
                     Logger.LogInfo("تم تطبيق Migration 011 بنجاح.", "DatabaseContext");
+                }
+
+                if (currentVersion < 12)
+                {
+                    // تطبيق Migration 012: جدول عدادات الفواتير لمنع تكرار الترقيم
+                    string script012 = ReadEmbeddedSql("012_InvoiceCounters.sql");
+                    ExecuteSqlScript(conn, script012);
+                    SetUserVersion(conn, 12);
+                    Logger.LogInfo("تم تطبيق Migration 012 بنجاح.", "DatabaseContext");
                 }
 
                 trans.Commit();
